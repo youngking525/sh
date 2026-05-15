@@ -189,16 +189,19 @@ EOF
 # ─── 验证配置 ────────────────────────────────────────────────
 info "验证配置文件..."
 
-if xray run -test -config /etc/xray/config.json > /tmp/xray-test.log 2>&1; then
+TEST_OUTPUT=$(xray run -test -config /etc/xray/config.json 2>&1 || true)
+
+echo "$TEST_OUTPUT" | grep -q "Configuration OK"
+
+if [ $? -eq 0 ]; then
     success "配置文件验证通过"
 else
-    warn "配置文件验证失败"
     echo
-    echo "========== Xray 原始错误 =========="
-    cat /tmp/xray-test.log
+    echo "========== Xray 原始输出 =========="
+    echo "$TEST_OUTPUT"
     echo "=================================="
     echo
-    warn "继续执行，你仍可手动修复配置"
+    error "配置文件验证失败"
 fi
 
 # ─── 第五步：创建 OpenRC 服务 ─────────────────────────────────

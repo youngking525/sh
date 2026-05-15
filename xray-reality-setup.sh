@@ -73,10 +73,10 @@ UUID=$(xray uuid)
 success "UUID：${UUID}"
 
 info "生成 Reality 密钥对..."
-KEYPAIR=$(xray x25519)
-PRIVATE_KEY=$(echo "$KEYPAIR" | grep "Private key:" | awk '{print $3}')
-PUBLIC_KEY=$(echo  "$KEYPAIR" | grep "Public key:"  | awk '{print $3}')
-[ -n "$PRIVATE_KEY" ] && [ -n "$PUBLIC_KEY" ] || error "密钥对生成失败"
+KEYPAIR=$(xray x25519 2>&1)
+PRIVATE_KEY=$(echo "$KEYPAIR" | grep -i "private" | awk '{print $NF}')
+PUBLIC_KEY=$(echo  "$KEYPAIR" | grep -i "public"  | awk '{print $NF}')
+[ -n "$PRIVATE_KEY" ] && [ -n "$PUBLIC_KEY" ] || error "密钥对生成失败，原始输出：${KEYPAIR}"
 success "密钥对生成完成"
 
 info "生成 ShortId..."

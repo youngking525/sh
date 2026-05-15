@@ -50,6 +50,7 @@ success "依赖安装完成"
 
 # ─── 第二步：下载 Xray ────────────────────────────────────────
 info "获取 Xray 最新版本..."
+# 用 redirect URL 提取版本号，避免 GitHub API 频率限制
 XRAY_VER=$(curl -fsSL -o /dev/null -w "%{url_effective}" \
     https://github.com/XTLS/Xray-core/releases/latest \
     | sed 's|.*/tag/||')
@@ -73,6 +74,7 @@ UUID=$(xray uuid)
 success "UUID：${UUID}"
 
 info "生成 Reality 密钥对..."
+# 用 $NF 取最后一个字段，兼容新旧版本输出格式变化
 KEYPAIR=$(xray x25519 2>&1)
 PRIVATE_KEY=$(echo "$KEYPAIR" | grep -i "private" | awk '{print $NF}')
 PUBLIC_KEY=$(echo  "$KEYPAIR" | grep -i "public"  | awk '{print $NF}')
@@ -164,11 +166,9 @@ success "Xray 服务已启动并设为开机自启"
 # ─── 第六步：放通防火墙端口 ───────────────────────────────────
 info "配置 iptables 放通端口 ${PORT}..."
 if command -v iptables > /dev/null 2>&1; then
-    # 避免重复添加规则
     if ! iptables -C INPUT -p tcp --dport "$PORT" -j ACCEPT 2>/dev/null; then
         iptables -I INPUT -p tcp --dport "$PORT" -j ACCEPT
     fi
-    # 持久化
     if ! rc-service iptables status > /dev/null 2>&1; then
         apk add -q iptables
         rc-update add iptables default > /dev/null 2>&1

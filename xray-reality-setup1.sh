@@ -50,43 +50,81 @@ success "依赖安装完成"
 
 # ─── 第二步：下载 Xray ────────────────────────────────────────
 info "获取 Xray 最新版本..."
-# 用 redirect URL 提取版本号，避免 GitHub API 频率限制
+
 XRAY_VER=$(curl -fsSL -o /dev/null -w "%{url_effective}" \
     https://github.com/XTLS/Xray-core/releases/latest \
     | sed 's|.*/tag/||')
-[ -n "$XRAY_VER" ] || error "获取 Xray 版本失败，请检查网络连接"
+
+[ -n "$XRAY_VER" ] || error "获取 Xray 版本失败，请检查网络"
+
 info "最新版本：${XRAY_VER}"
 
 TMPDIR=$(mktemp -d)
 trap 'rm -rf "$TMPDIR"' EXIT
 
 info "下载 Xray 二进制..."
-curl -fsSL "https://github.com/XTLS/Xray-core/releases/download/${XRAY_VER}/Xray-linux-64.zip" \
-    -o "$TMPDIR/xray.zip" || error "下载失败，请检查网络"
+
+curl -fsSL \
+    "https://github.com/XTLS/Xray-core/releases/download/${XRAY_VER}/Xray-linux-64.zip" \
+    -o "$TMPDIR/xray.zip" \
+    || error "下载失败，请检查网络"
 
 unzip -q "$TMPDIR/xray.zip" -d "$TMPDIR/xray"
+
 install -m 755 "$TMPDIR/xray/xray" /usr/local/bin/xray
+
 success "Xray ${XRAY_VER} 安装完成 → /usr/local/bin/xray"
 
 # ─── 第三步：生成参数 ─────────────────────────────────────────
 info "生成 UUID..."
+
 UUID=$(xray uuid)
+
+[ -n "$UUID" ] || error "UUID 生成失败"
+
 success "UUID：${UUID}"
 
 info "生成 Reality 密钥对..."
-# 用 $NF 取最后一个字段，兼容新旧版本输出格式变化
-KEYPAIR=$(xray x25519 2>&1)
-PRIVATE_KEY=$(echo "$KEYPAIR" | grep -i "private" | awk '{print $NF}')
-PUBLIC_KEY=$(echo  "$KEYPAIR" | grep -i "public"  | awk '{print $NF}')
-[ -n "$PRIVATE_KEY" ] && [ -n "$PUBLIC_KEY" ] || error "密钥对生成失败，原始输出：${KEYPAIR}"
+
+KEYPAIR=$(xray x25519 2>&1 || true)
+
+PRIVATE_KEY=$(echo "$KEYPAIR" \
+    | grep -E "PrivateKey|Private key" \
+    | head -n1 \
+    | cut -d ':' -f2- \
+    | xargs)
+
+PUBLIC_KEY=$(echo "$KEYPAIR" \
+    | grep -E "PublicKey|Public key" \
+    | head -n1 \
+    | cut -d ':' -f2- \
+    | xargs)
+
+# 兼容某些新版输出：Password (PublicKey)
+if [ -z "$PUBLIC_KEY" ]; then
+    PUBLIC_KEY=$(echo "$KEYPAIR" \
+        | grep "Password (PublicKey)" \
+        | head -n1 \
+        | cut -d ':' -f2- \
+        | xargs)
+fi
+
+[ -n "$PRIVATE_KEY" ] && [ -n "$PUBLIC_KEY" ] \
+    || error "密钥对生成失败，原始输出：${KEYPAIR}"
+
 success "密钥对生成完成"
 
 info "生成 ShortId..."
+
 SHORT_ID=$(openssl rand -hex 4)
+
+[ -n "$SHORT_ID" ] || error "ShortId 生成失败"
+
 success "ShortId：${SHORT_ID}"
 
 # ─── 第四步：写配置文件 ───────────────────────────────────────
 info "写入 Xray 配置..."
+
 mkdir -p /etc/xray
 
 cat > /etc/xray/config.json << EOF
@@ -94,46 +132,68 @@ cat > /etc/xray/config.json << EOF
   "log": {
     "loglevel": "warning",
     "access": "/var/log/xray-access.log",
-    "error":  "/var/log/xray-error.log"
+    "error": "/var/log/xray-error.log"
   },
-  "inbounds": [{
-    "port": ${PORT},
-    "protocol": "vless",
-    "settings": {
-      "clients": [{
-        "id": "${UUID}",
-        "flow": "xtls-rprx-vision"
-      }],
-      "decryption": "none"
-    },
-    "streamSettings": {
-      "network": "tcp",
-      "security": "reality",
-      "realitySettings": {
-        "show": false,
-        "dest": "www.microsoft.com:443",
-        "xver": 0,
-        "serverNames": ["www.microsoft.com"],
-        "privateKey": "${PRIVATE_KEY}",
-        "shortIds": ["${SHORT_ID}"]
+  "inbounds": [
+    {
+      "port": ${PORT},
+      "protocol": "vless",
+      "settings": {
+        "clients": [
+          {
+            "id": "${UUID}",
+            "flow": "xtls-rprx-vision"
+          }
+        ],
+        "decryption": "none"
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "security": "reality",
+        "realitySettings": {
+          "show": false,
+          "dest": "www.microsoft.com:443",
+          "xver": 0,
+          "serverNames": [
+            "www.microsoft.com"
+          ],
+          "privateKey": "${PRIVATE_KEY}",
+          "shortIds": [
+            "${SHORT_ID}"
+          ]
+        }
+      },
+      "sniffing": {
+        "enabled": true,
+        "destOverride": [
+          "http",
+          "tls",
+          "quic"
+        ]
       }
-    },
-    "sniffing": {
-      "enabled": true,
-      "destOverride": ["http", "tls", "quic"]
     }
-  }],
+  ],
   "outbounds": [
-    { "protocol": "freedom",   "tag": "direct" },
-    { "protocol": "blackhole", "tag": "block"  }
+    {
+      "protocol": "freedom",
+      "tag": "direct"
+    },
+    {
+      "protocol": "blackhole",
+      "tag": "block"
+    }
   ]
 }
 EOF
 
-# 验证配置
-xray run -test -config /etc/xray/config.json > /dev/null 2>&1 \
-    || error "配置文件验证失败，请检查 /etc/xray/config.json"
-success "配置文件写入并验证通过"
+# ─── 验证配置 ────────────────────────────────────────────────
+info "验证配置文件..."
+
+if xray test -config /etc/xray/config.json > /dev/null 2>&1; then
+    success "配置文件验证通过"
+else
+    error "配置文件验证失败，请检查 /etc/xray/config.json"
+fi
 
 # ─── 第五步：创建 OpenRC 服务 ─────────────────────────────────
 info "创建 OpenRC 服务..."
@@ -143,12 +203,12 @@ cat > /etc/init.d/xray << 'INITEOF'
 
 name="xray"
 description="Xray Proxy Service"
+
 command="/usr/local/bin/xray"
 command_args="run -config /etc/xray/config.json"
+
 command_background=true
 pidfile="/run/xray.pid"
-output_log="/var/log/xray-access.log"
-error_log="/var/log/xray-error.log"
 
 depend() {
     need net
@@ -158,21 +218,32 @@ INITEOF
 
 chmod +x /etc/init.d/xray
 
-# 启动服务
-rc-service xray start  > /dev/null 2>&1 || error "Xray 启动失败，查看日志：tail -f /var/log/xray-error.log"
+# ─── 启动服务 ────────────────────────────────────────────────
+info "启动 Xray 服务..."
+
+rc-service xray restart > /dev/null 2>&1 || \
+rc-service xray start > /dev/null 2>&1 || \
+error "Xray 启动失败，请查看日志"
+
 rc-update add xray default > /dev/null 2>&1
+
 success "Xray 服务已启动并设为开机自启"
 
-# ─── 获取服务器公网 IP ────────────────────────────────────────
-SERVER_IP=$(curl -fsSL --max-time 5 https://api.ipify.org 2>/dev/null \
-         || curl -fsSL --max-time 5 https://ifconfig.me 2>/dev/null \
-         || echo "（获取失败，请手动填写）")
+# ─── 获取服务器公网 IP ───────────────────────────────────────
+info "获取公网 IP..."
+
+SERVER_IP=$(
+    curl -4fsSL --max-time 5 https://api.ipify.org 2>/dev/null \
+    || curl -4fsSL --max-time 5 https://ifconfig.me 2>/dev/null \
+    || echo "请手动填写"
+)
 
 # ─── 最终输出 ─────────────────────────────────────────────────
 echo
 echo -e "${BOLD}${GREEN}========================================${RESET}"
 echo -e "${BOLD}${GREEN}       安装完成！客户端配置如下         ${RESET}"
 echo -e "${BOLD}${GREEN}========================================${RESET}"
+
 echo -e "  ${BOLD}服务器 IP${RESET}   : ${YELLOW}${SERVER_IP}${RESET}"
 echo -e "  ${BOLD}端口${RESET}        : ${YELLOW}${PORT}${RESET}"
 echo -e "  ${BOLD}协议${RESET}        : VLESS"
@@ -184,9 +255,11 @@ echo -e "  ${BOLD}SNI${RESET}         : www.microsoft.com"
 echo -e "  ${BOLD}PublicKey${RESET}   : ${YELLOW}${PUBLIC_KEY}${RESET}"
 echo -e "  ${BOLD}ShortId${RESET}     : ${YELLOW}${SHORT_ID}${RESET}"
 echo -e "  ${BOLD}Fingerprint${RESET} : chrome"
+
 echo -e "${BOLD}${GREEN}========================================${RESET}"
 echo
-echo -e "查看运行日志：${CYAN}tail -f /var/log/xray-error.log${RESET}"
-echo -e "重启服务：    ${CYAN}rc-service xray restart${RESET}"
-echo -e "停止服务：    ${CYAN}rc-service xray stop${RESET}"
+
+echo -e "查看日志：${CYAN}tail -f /var/log/xray-error.log${RESET}"
+echo -e "重启服务：${CYAN}rc-service xray restart${RESET}"
+echo -e "停止服务：${CYAN}rc-service xray stop${RESET}"
 echo

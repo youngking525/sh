@@ -50,8 +50,9 @@ success "依赖安装完成"
 
 # ─── 第二步：下载 Xray ────────────────────────────────────────
 info "获取 Xray 最新版本..."
-XRAY_VER=$(curl -fsSL https://api.github.com/repos/XTLS/Xray-core/releases/latest \
-    | grep '"tag_name"' | cut -d'"' -f4)
+XRAY_VER=$(curl -fsSL -o /dev/null -w "%{url_effective}" \
+    https://github.com/XTLS/Xray-core/releases/latest \
+    | sed 's|.*/tag/||')
 [ -n "$XRAY_VER" ] || error "获取 Xray 版本失败，请检查网络连接"
 info "最新版本：${XRAY_VER}"
 

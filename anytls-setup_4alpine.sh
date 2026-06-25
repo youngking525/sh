@@ -52,7 +52,9 @@ STEOF
 }
 
 load_state() {
-    [ -f "$STATE_FILE" ] && . "$STATE_FILE"
+    if [ -f "$STATE_FILE" ]; then
+        . "$STATE_FILE" || true
+    fi
 }
 
 # ─── 必须 root ────────────────────────────────────────────────
@@ -139,7 +141,7 @@ step3_gen_params() {
 
     # ── 密码 ──
     info "生成连接密码..."
-    PASSWORD=$(openssl rand -base64 18 | tr -d '=+/' | head -c 24)
+    PASSWORD=$(openssl rand -base64 18 | tr -d '=+/' | { head -c 24; cat > /dev/null; })
     [ -n "$PASSWORD" ] || error "密码生成失败"
     success "密码：${PASSWORD}"
 

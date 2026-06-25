@@ -134,10 +134,10 @@ cat > /etc/xray/config.json << EOF
         "security": "reality",
         "realitySettings": {
           "show": false,
-          "dest": "www.microsoft.com:443",
+          "dest": "www.zhihu.com:443",
           "xver": 0,
           "serverNames": [
-            "www.microsoft.com"
+            "www.zhihu.com"
           ],
           "privateKey": "${PRIVATE_KEY}",
           "shortIds": [
@@ -230,7 +230,7 @@ SERVER_IPV6=$(
 )
 
 # ─── 生成 VLESS 分享链接 ──────────────────────────────────────
-VLESS_PARAMS="encryption=none&flow=xtls-rprx-vision&security=reality&sni=www.microsoft.com&fp=chrome&pbk=${PUBLIC_KEY}&sid=${SHORT_ID}&type=tcp"
+VLESS_PARAMS="encryption=none&flow=xtls-rprx-vision&security=reality&sni=www.zhihu.com&fp=chrome&pbk=${PUBLIC_KEY}&sid=${SHORT_ID}&type=tcp"
 
 if [ -n "$SERVER_IPV4" ]; then
     VLESS_LINK_V4="vless://${UUID}@${SERVER_IPV4}:${PORT}?${VLESS_PARAMS}#Xray-Reality-v4"
@@ -264,7 +264,7 @@ echo -e "  ${BOLD}UUID${RESET}        : ${YELLOW}${UUID}${RESET}"
 echo -e "  ${BOLD}Flow${RESET}        : xtls-rprx-vision"
 echo -e "  ${BOLD}传输${RESET}        : TCP"
 echo -e "  ${BOLD}安全${RESET}        : reality"
-echo -e "  ${BOLD}SNI${RESET}         : www.microsoft.com"
+echo -e "  ${BOLD}SNI${RESET}         : www.zhihu.com"
 echo -e "  ${BOLD}PublicKey${RESET}   : ${YELLOW}${PUBLIC_KEY}${RESET}"
 echo -e "  ${BOLD}ShortId${RESET}     : ${YELLOW}${SHORT_ID}${RESET}"
 echo -e "  ${BOLD}Fingerprint${RESET} : chrome"

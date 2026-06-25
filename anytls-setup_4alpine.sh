@@ -133,7 +133,7 @@ step3_gen_params() {
 
     # ── SNI（证书 CN，仅影响伪装，skip-cert-verify 时客户端不做校验）──
     if [ -z "$SNI" ]; then
-        SNI="www.apple.com"
+        SNI="www.zhihu.com"
     fi
     info "证书 CN / SNI：${SNI}"
 

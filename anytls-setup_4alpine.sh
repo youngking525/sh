@@ -3,6 +3,16 @@
 #  AnyTLS 安装 / 卸载脚本（Alpine Linux，分步版）
 #  仓库：anytls/anytls-go
 #
+#  重要说明：
+#    官方 anytls-server 参考实现内置自签证书逻辑，命令行仅支持
+#    以下参数（已通过实测 anytls-server -h 确认）：
+#      -l  监听地址:端口（默认 0.0.0.0:8443）
+#      -p  密码
+#      -padding-scheme  填充策略（可选，一般不用改）
+#    不支持 --cert/--key 外部证书参数，因此客户端必须开启
+#    skip-cert-verify（跳过证书校验），这是协议本身的设计，
+#    不是配置缺陷。
+#
 #  用法：
 #    bash anytls-steps.sh              # 主菜单（选安装或卸载）
 #    bash anytls-steps.sh install      # 直接进入安装菜单
@@ -15,7 +25,7 @@
 #  安装步骤：
 #    1  安装系统依赖
 #    2  下载并安装 AnyTLS 服务端二进制
-#    3  生成端口 / 密码 / 自签证书（写入状态文件）
+#    3  生成端口 / 密码（写入状态文件）
 #    4  创建 OpenRC 服务（读取状态文件）
 #    5  启动并验证服务
 #    6  输出客户端配置 & 分享链接
@@ -24,7 +34,7 @@
 #    1  停止服务并移除开机自启
 #    2  删除 OpenRC 服务文件
 #    3  删除二进制文件
-#    4  删除配置目录（证书 / 状态文件）
+#    4  删除配置目录（状态文件）
 #    5  删除日志文件
 #
 #  状态文件：/etc/anytls/.install_state
@@ -43,8 +53,6 @@ error()   { echo -e "${RED}[ERROR]${RESET} $*"; exit 1; }
 
 # ─── 路径常量 ─────────────────────────────────────────────────
 STATE_FILE="/etc/anytls/.install_state"
-CERT_PATH="/etc/anytls/server.crt"
-KEY_PATH="/etc/anytls/server.key"
 BIN_PATH="/usr/local/bin/anytls-server"
 
 # ─── 保存 / 读取状态 ──────────────────────────────────────────
@@ -53,9 +61,6 @@ save_state() {
     cat > "$STATE_FILE" << STEOF
 PORT="${PORT}"
 PASSWORD="${PASSWORD}"
-SNI="${SNI}"
-CERT_PATH="${CERT_PATH}"
-KEY_PATH="${KEY_PATH}"
 STEOF
     chmod 600 "$STATE_FILE"
 }
@@ -116,12 +121,12 @@ step_install_2() {
     rm -rf "$TMPDIR_DL"
 
     success "AnyTLS ${VER_TAG} 安装完成 → ${BIN_PATH}"
-    info "版本信息："
-    "$BIN_PATH" --version 2>/dev/null || "$BIN_PATH" -v 2>/dev/null || true
+    info "参数列表（供参考）："
+    "$BIN_PATH" -h 2>&1 | sed 's/^/    /' || true
 }
 
 step_install_3() {
-    echo -e "\n${BOLD}[安装 3/6] 生成端口 / 密码 / 自签证书${RESET}"
+    echo -e "\n${BOLD}[安装 3/6] 生成端口 / 密码${RESET}"
 
     load_state
 
@@ -139,30 +144,11 @@ step_install_3() {
         error "端口号无效：$PORT（需为 1-65535 的整数）"
     fi
 
-    # ── SNI ──
-    if [ -z "$SNI" ]; then
-        SNI="www.zhihu.com"
-    fi
-    info "证书 CN / SNI：${SNI}"
-
     # ── 密码 ──
     info "生成连接密码..."
     PASSWORD=$(openssl rand -base64 18 | tr -d '=+/' | { head -c 24; cat > /dev/null; })
     [ -n "$PASSWORD" ] || error "密码生成失败"
     success "密码：${PASSWORD}"
-
-    # ── 自签证书（ECC P-256）──
-    mkdir -p /etc/anytls
-    info "生成自签 TLS 证书（CN=${SNI}）..."
-    openssl ecparam -genkey -name prime256v1 -out "$KEY_PATH" 2>/dev/null
-    openssl req -new -x509 -days 36500 \
-        -key "$KEY_PATH" -out "$CERT_PATH" \
-        -subj "/CN=${SNI}" 2>/dev/null \
-        || error "证书生成失败"
-
-    chmod 600 "$KEY_PATH"
-    chmod 644 "$CERT_PATH"
-    success "证书生成完成 → ${CERT_PATH} / ${KEY_PATH}"
 
     save_state
     success "参数已保存到 ${STATE_FILE}"
@@ -172,13 +158,14 @@ step_install_4() {
     echo -e "\n${BOLD}[安装 4/6] 创建 OpenRC 服务${RESET}"
 
     load_state
-    [ -n "$PORT" ]      || error "缺少 PORT，请先执行安装步骤 3"
-    [ -n "$PASSWORD" ]  || error "缺少 PASSWORD，请先执行安装步骤 3"
-    [ -f "$CERT_PATH" ] || error "证书文件不存在，请先执行安装步骤 3"
-    [ -f "$BIN_PATH" ]  || error "二进制不存在，请先执行安装步骤 2"
+    [ -n "$PORT" ]     || error "缺少 PORT，请先执行安装步骤 3"
+    [ -n "$PASSWORD" ] || error "缺少 PASSWORD，请先执行安装步骤 3"
+    [ -f "$BIN_PATH" ] || error "二进制不存在，请先执行安装步骤 2"
 
     info "写入 /etc/init.d/anytls..."
 
+    # 官方 anytls-server 只支持 -l / -p / -padding-scheme
+    # 不支持外部证书参数，内部自动使用自签证书
     cat > /etc/init.d/anytls << INITEOF
 #!/sbin/openrc-run
 
@@ -186,7 +173,7 @@ name="anytls"
 description="AnyTLS Proxy Service"
 
 command="${BIN_PATH}"
-command_args="-l :${PORT} -p ${PASSWORD} --cert ${CERT_PATH} --key ${KEY_PATH}"
+command_args="-l :${PORT} -p ${PASSWORD}"
 command_background=true
 pidfile="/run/anytls.pid"
 
@@ -201,7 +188,7 @@ INITEOF
 
     chmod +x /etc/init.d/anytls
     success "OpenRC 服务文件写入完成"
-    info "启动参数：-l :${PORT} -p ${PASSWORD} --cert ${CERT_PATH} --key ${KEY_PATH}"
+    info "启动参数：-l :${PORT} -p ${PASSWORD}"
 }
 
 step_install_5() {
@@ -212,7 +199,7 @@ step_install_5() {
     info "启动 AnyTLS 服务..."
     rc-service anytls restart > /dev/null 2>&1 \
         || rc-service anytls start > /dev/null 2>&1 \
-        || error "AnyTLS 启动失败，查看日志：tail -f /var/log/anytls-error.log"
+        || true
 
     rc-update add anytls default > /dev/null 2>&1
     success "AnyTLS 已设为开机自启"
@@ -227,8 +214,11 @@ step_install_5() {
     if ss -tlnp 2>/dev/null | grep -q ":${PORT}"; then
         success "TCP ${PORT} 端口已在监听，服务启动成功"
     else
-        warn "未检测到 ${PORT} 端口监听，请查看日志排查："
-        warn "  tail -f /var/log/anytls-error.log"
+        warn "未检测到 ${PORT} 端口监听，最近的错误日志："
+        echo
+        tail -n 20 /var/log/anytls-error.log 2>/dev/null || warn "日志文件不存在"
+        echo
+        error "服务未正常启动，请根据以上日志排查后重新执行本步骤"
     fi
 }
 
@@ -238,7 +228,6 @@ step_install_6() {
     load_state
     [ -n "$PASSWORD" ] || error "缺少配置参数，请先执行安装步骤 3"
     [ -n "$PORT" ]     || error "缺少 PORT，请先执行安装步骤 3"
-    [ -n "$SNI" ]      || error "缺少 SNI，请先执行安装步骤 3"
 
     info "获取公网 IP..."
 
@@ -255,7 +244,7 @@ step_install_6() {
         || echo ""
     )
 
-    HY_PARAMS="allowInsecure=1&sni=${SNI}"
+    HY_PARAMS="allowInsecure=1"
     [ -n "$SERVER_IPV4" ] && LINK_V4="anytls://${PASSWORD}@${SERVER_IPV4}:${PORT}?${HY_PARAMS}#AnyTLS-v4"
     [ -n "$SERVER_IPV6" ] && LINK_V6="anytls://${PASSWORD}@[${SERVER_IPV6}]:${PORT}?${HY_PARAMS}#AnyTLS-v6"
 
@@ -278,12 +267,12 @@ step_install_6() {
     echo -e "  ${BOLD}端口（TCP）${RESET}  : ${YELLOW}${PORT}${RESET}"
     echo -e "  ${BOLD}协议${RESET}         : AnyTLS"
     echo -e "  ${BOLD}密码${RESET}         : ${YELLOW}${PASSWORD}${RESET}"
-    echo -e "  ${BOLD}SNI${RESET}          : ${SNI}"
-    echo -e "  ${BOLD}证书校验${RESET}     : 跳过（自签证书，客户端需开启 skip-cert-verify）"
+    echo -e "  ${BOLD}证书${RESET}         : 服务端内置自签证书（无需手动配置）"
+    echo -e "  ${BOLD}证书校验${RESET}     : 客户端必须开启 skip-cert-verify"
     echo
     echo -e "  ${BOLD}--- Nikki/Clash 节点格式 ---${RESET}"
     if [ -n "$SERVER_IPV4" ]; then
-        echo -e "  ${CYAN}- {name: AnyTLS-节点, type: anytls, server: ${SERVER_IPV4}, port: ${PORT}, password: ${PASSWORD}, sni: ${SNI}, skip-cert-verify: true, client-fingerprint: chrome, udp: true}${RESET}"
+        echo -e "  ${CYAN}- {name: AnyTLS-节点, type: anytls, server: ${SERVER_IPV4}, port: ${PORT}, password: ${PASSWORD}, skip-cert-verify: true, client-fingerprint: chrome, udp: true}${RESET}"
     fi
     if [ -n "$LINK_V4" ] || [ -n "$LINK_V6" ]; then
         echo
@@ -293,6 +282,8 @@ step_install_6() {
     fi
     echo
     echo -e "${BOLD}${YELLOW}注意：AnyTLS 基于 TCP，请确认防火墙/安全组已放行 TCP ${PORT} 端口${RESET}"
+    echo -e "${BOLD}${YELLOW}注意：由于官方服务端不支持自定义证书，sni 字段可不填，${RESET}"
+    echo -e "${BOLD}${YELLOW}      客户端只要开启 skip-cert-verify 即可正常连接${RESET}"
     echo
     echo -e "${BOLD}${GREEN}============================================${RESET}"
     echo
@@ -330,7 +321,6 @@ step_remove_2() {
         warn "/etc/init.d/anytls 不存在，跳过"
     fi
 
-    # 清理 pid 文件
     rm -f /run/anytls.pid
 }
 
@@ -346,7 +336,7 @@ step_remove_3() {
 }
 
 step_remove_4() {
-    echo -e "\n${BOLD}[卸载 4/5] 删除配置目录（证书 / 状态文件）${RESET}"
+    echo -e "\n${BOLD}[卸载 4/5] 删除配置目录（状态文件）${RESET}"
 
     if [ -d /etc/anytls ]; then
         info "将删除以下内容："
@@ -415,7 +405,7 @@ show_install_menu() {
     echo
     echo -e "  ${CYAN}1${RESET}  安装系统依赖"
     echo -e "  ${CYAN}2${RESET}  下载并安装 AnyTLS 服务端二进制"
-    echo -e "  ${CYAN}3${RESET}  生成端口 / 密码 / 自签证书"
+    echo -e "  ${CYAN}3${RESET}  生成端口 / 密码"
     echo -e "  ${CYAN}4${RESET}  创建 OpenRC 服务"
     echo -e "  ${CYAN}5${RESET}  启动并验证服务"
     echo -e "  ${CYAN}6${RESET}  输出客户端配置 & 分享链接"
@@ -437,7 +427,7 @@ show_remove_menu() {
     echo -e "  ${CYAN}1${RESET}  停止服务并移除开机自启"
     echo -e "  ${CYAN}2${RESET}  删除 OpenRC 服务文件"
     echo -e "  ${CYAN}3${RESET}  删除二进制文件"
-    echo -e "  ${CYAN}4${RESET}  删除配置目录（证书 / 状态文件）"
+    echo -e "  ${CYAN}4${RESET}  删除配置目录（状态文件）"
     echo -e "  ${CYAN}5${RESET}  删除日志文件"
     echo -e "  ${CYAN}all${RESET} 一次性执行全部卸载步骤"
     echo -e "  ${CYAN}b${RESET}  返回主菜单"
@@ -546,7 +536,6 @@ CMD_PORT="${PORT:-}"
 
 case "$1" in
     install)
-        # bash script.sh install [步骤号/all]
         if [ -n "$2" ]; then
             run_install_step "$2"
         else
@@ -554,7 +543,6 @@ case "$1" in
         fi
         ;;
     remove|uninstall)
-        # bash script.sh remove [步骤号/all]
         if [ -n "$2" ]; then
             run_remove_step "$2"
         else
@@ -562,7 +550,6 @@ case "$1" in
         fi
         ;;
     "")
-        # 无参数：显示主菜单
         show_main_menu
         while true; do
             read -rp "$(echo -e "${BOLD}请选择操作（i 安装 / r 卸载 / q 退出）：${RESET}")" CHOICE

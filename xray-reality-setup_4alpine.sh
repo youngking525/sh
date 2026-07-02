@@ -1,13 +1,17 @@
 #!/bin/bash
 # ==============================================================
-#  Xray VLESS+Reality 分步安装脚本（Alpine Linux）
+#  Xray VLESS+Reality 安装 / 卸载脚本（Alpine Linux，分步版）
 #
 #  用法：
-#    bash xray-reality-steps.sh          # 显示步骤菜单
-#    bash xray-reality-steps.sh <步骤号>  # 直接执行某步
-#    bash xray-reality-steps.sh all      # 一次性执行全部步骤
+#    bash xray-reality-steps.sh              # 主菜单（选安装或卸载）
+#    bash xray-reality-steps.sh install      # 直接进入安装菜单
+#    bash xray-reality-steps.sh install <N>  # 直接执行安装步骤 N
+#    bash xray-reality-steps.sh install all  # 一次性完整安装
+#    bash xray-reality-steps.sh remove       # 直接进入卸载菜单
+#    bash xray-reality-steps.sh remove <N>   # 直接执行卸载步骤 N
+#    bash xray-reality-steps.sh remove all   # 一次性完整卸载
 #
-#  步骤列表：
+#  安装步骤：
 #    1  安装系统依赖
 #    2  下载并安装 Xray 二进制
 #    3  生成 UUID / 密钥对 / ShortId（写入状态文件）
@@ -16,8 +20,15 @@
 #    6  创建并启动 OpenRC 服务
 #    7  输出客户端配置 & 分享链接
 #
+#  卸载步骤：
+#    1  停止服务并移除开机自启
+#    2  删除 OpenRC 服务文件
+#    3  删除二进制文件
+#    4  删除配置目录（配置文件 / 状态文件）
+#    5  删除日志文件
+#
 #  状态文件：/etc/xray/.install_state
-#  如需更换端口，修改 PORT 变量后从步骤 3 重新执行即可。
+#  如需更换端口，修改后从安装步骤 3 重新执行即可。
 # ==============================================================
 
 set -eo pipefail
@@ -31,8 +42,9 @@ success() { echo -e "${GREEN}[OK]${RESET}    $*"; }
 warn()    { echo -e "${YELLOW}[WARN]${RESET}  $*"; }
 error()   { echo -e "${RED}[ERROR]${RESET} $*"; exit 1; }
 
-# ─── 状态文件路径 ─────────────────────────────────────────────
+# ─── 路径常量 ─────────────────────────────────────────────────
 STATE_FILE="/etc/xray/.install_state"
+BIN_PATH="/usr/local/bin/xray"
 
 # ─── 保存 / 读取状态 ──────────────────────────────────────────
 save_state() {
@@ -43,14 +55,14 @@ UUID="${UUID}"
 PRIVATE_KEY="${PRIVATE_KEY}"
 PUBLIC_KEY="${PUBLIC_KEY}"
 SHORT_ID="${SHORT_ID}"
+SNI="${SNI}"
 STEOF
     chmod 600 "$STATE_FILE"
 }
 
 load_state() {
     if [ -f "$STATE_FILE" ]; then
-        # shellcheck source=/dev/null
-        . "$STATE_FILE"
+        . "$STATE_FILE" || true
     fi
 }
 
@@ -60,19 +72,19 @@ check_root() {
 }
 
 # ==============================================================
-#  各步骤函数
+#  安装步骤
 # ==============================================================
 
-step1_install_deps() {
-    echo -e "\n${BOLD}[步骤 1] 安装系统依赖${RESET}"
+step_install_1() {
+    echo -e "\n${BOLD}[安装 1/7] 安装系统依赖${RESET}"
     [ -f /etc/alpine-release ] || warn "未检测到 Alpine Linux，继续执行..."
     apk update -q
     apk add -q curl unzip bash openssl
     success "依赖安装完成（curl unzip bash openssl）"
 }
 
-step2_download_xray() {
-    echo -e "\n${BOLD}[步骤 2] 下载并安装 Xray${RESET}"
+step_install_2() {
+    echo -e "\n${BOLD}[安装 2/7] 下载并安装 Xray${RESET}"
 
     info "获取 Xray 最新版本..."
     XRAY_VER=$(curl -fsSL -o /dev/null -w "%{url_effective}" \
@@ -82,7 +94,6 @@ step2_download_xray() {
     info "最新版本：${XRAY_VER}"
 
     TMPDIR_DL=$(mktemp -d)
-    # 不用 trap EXIT，避免干扰外层
     info "下载 Xray-linux-64.zip..."
     curl -fsSL \
         "https://github.com/XTLS/Xray-core/releases/download/${XRAY_VER}/Xray-linux-64.zip" \
@@ -90,16 +101,15 @@ step2_download_xray() {
         || error "下载失败，请检查网络"
 
     unzip -q "$TMPDIR_DL/xray.zip" -d "$TMPDIR_DL/xray"
-    install -m 755 "$TMPDIR_DL/xray/xray" /usr/local/bin/xray
+    install -m 755 "$TMPDIR_DL/xray/xray" "$BIN_PATH"
     rm -rf "$TMPDIR_DL"
 
-    success "Xray ${XRAY_VER} 安装完成 → /usr/local/bin/xray"
+    success "Xray ${XRAY_VER} 安装完成 → ${BIN_PATH}"
 }
 
-step3_gen_params() {
-    echo -e "\n${BOLD}[步骤 3] 生成 UUID / 密钥对 / ShortId${RESET}"
+step_install_3() {
+    echo -e "\n${BOLD}[安装 3/7] 生成 UUID / 密钥对 / ShortId${RESET}"
 
-    # 读取已有状态中的 PORT，允许命令行覆盖
     load_state
     if [ -n "$CMD_PORT" ]; then
         PORT="$CMD_PORT"
@@ -114,7 +124,12 @@ step3_gen_params() {
         error "端口号无效：$PORT（需为 1-65535 的整数）"
     fi
 
-    command -v xray > /dev/null 2>&1 || error "未找到 xray，请先执行步骤 2"
+    if [ -z "$SNI" ]; then
+        SNI="www.zhihu.com"
+    fi
+    info "Reality 伪装域名（SNI）：${SNI}"
+
+    command -v xray > /dev/null 2>&1 || error "未找到 xray，请先执行安装步骤 2"
 
     info "生成 UUID..."
     UUID=$(xray uuid)
@@ -153,14 +168,15 @@ step3_gen_params() {
     success "参数已保存到 ${STATE_FILE}"
 }
 
-step4_write_config() {
-    echo -e "\n${BOLD}[步骤 4] 写入 Xray 配置文件${RESET}"
+step_install_4() {
+    echo -e "\n${BOLD}[安装 4/7] 写入 Xray 配置文件${RESET}"
 
     load_state
-    [ -n "$UUID" ]        || error "缺少 UUID，请先执行步骤 3"
-    [ -n "$PRIVATE_KEY" ] || error "缺少 PrivateKey，请先执行步骤 3"
-    [ -n "$PORT" ]        || error "缺少 PORT，请先执行步骤 3"
-    [ -n "$SHORT_ID" ]    || error "缺少 ShortId，请先执行步骤 3"
+    [ -n "$UUID" ]        || error "缺少 UUID，请先执行安装步骤 3"
+    [ -n "$PRIVATE_KEY" ] || error "缺少 PrivateKey，请先执行安装步骤 3"
+    [ -n "$PORT" ]        || error "缺少 PORT，请先执行安装步骤 3"
+    [ -n "$SHORT_ID" ]    || error "缺少 ShortId，请先执行安装步骤 3"
+    [ -n "$SNI" ]         || error "缺少 SNI，请先执行安装步骤 3"
 
     mkdir -p /etc/xray
 
@@ -190,10 +206,10 @@ step4_write_config() {
         "security": "reality",
         "realitySettings": {
           "show": false,
-          "dest": "www.zhihu.com:443",
+          "dest": "${SNI}:443",
           "xver": 0,
           "serverNames": [
-            "www.zhihu.com"
+            "${SNI}"
           ],
           "privateKey": "${PRIVATE_KEY}",
           "shortIds": [
@@ -223,11 +239,11 @@ EOF
     success "配置文件已写入 /etc/xray/config.json"
 }
 
-step5_verify_config() {
-    echo -e "\n${BOLD}[步骤 5] 验证配置文件${RESET}"
+step_install_5() {
+    echo -e "\n${BOLD}[安装 5/7] 验证配置文件${RESET}"
 
-    command -v xray > /dev/null 2>&1 || error "未找到 xray，请先执行步骤 2"
-    [ -f /etc/xray/config.json ]     || error "配置文件不存在，请先执行步骤 4"
+    command -v xray > /dev/null 2>&1 || error "未找到 xray，请先执行安装步骤 2"
+    [ -f /etc/xray/config.json ]     || error "配置文件不存在，请先执行安装步骤 4"
 
     info "运行 xray 配置测试..."
     TEST_OUTPUT=$(xray run -test -config /etc/xray/config.json 2>&1 || true)
@@ -239,23 +255,23 @@ step5_verify_config() {
         echo "========== Xray 原始输出 =========="
         echo "$TEST_OUTPUT"
         echo "===================================="
-        error "配置文件验证失败，请检查步骤 3/4 的输出"
+        error "配置文件验证失败，请检查安装步骤 3/4 的输出"
     fi
 }
 
-step6_setup_service() {
-    echo -e "\n${BOLD}[步骤 6] 创建并启动 OpenRC 服务${RESET}"
+step_install_6() {
+    echo -e "\n${BOLD}[安装 6/7] 创建并启动 OpenRC 服务${RESET}"
 
-    [ -f /etc/xray/config.json ] || error "配置文件不存在，请先执行步骤 4"
+    [ -f /etc/xray/config.json ] || error "配置文件不存在，请先执行安装步骤 4"
 
     info "写入 /etc/init.d/xray..."
-    cat > /etc/init.d/xray << 'INITEOF'
+    cat > /etc/init.d/xray << INITEOF
 #!/sbin/openrc-run
 
 name="xray"
 description="Xray Proxy Service"
 
-command="/usr/local/bin/xray"
+command="${BIN_PATH}"
 command_args="run -config /etc/xray/config.json"
 command_background=true
 pidfile="/run/xray.pid"
@@ -275,23 +291,32 @@ INITEOF
     info "启动 Xray 服务..."
     rc-service xray restart > /dev/null 2>&1 \
         || rc-service xray start > /dev/null 2>&1 \
-        || error "Xray 启动失败，查看日志：tail -f /var/log/xray-error.log"
+        || true
 
     rc-update add xray default > /dev/null 2>&1
-    success "Xray 服务已启动并设为开机自启"
+    success "Xray 服务已设为开机自启"
 
     info "当前服务状态："
     rc-service xray status || true
+
+    if ! pgrep -f "xray run" > /dev/null 2>&1; then
+        echo
+        warn "进程未检测到，最近的错误日志："
+        tail -n 20 /var/log/xray-error.log 2>/dev/null || warn "日志文件不存在"
+        echo
+        error "服务未正常启动，请根据以上日志排查后重新执行本步骤"
+    fi
 }
 
-step7_show_info() {
-    echo -e "\n${BOLD}[步骤 7] 输出客户端配置${RESET}"
+step_install_7() {
+    echo -e "\n${BOLD}[安装 7/7] 输出客户端配置${RESET}"
 
     load_state
-    [ -n "$UUID" ]       || error "缺少配置参数，请先执行步骤 3"
-    [ -n "$PUBLIC_KEY" ] || error "缺少 PublicKey，请先执行步骤 3"
-    [ -n "$PORT" ]       || error "缺少 PORT，请先执行步骤 3"
-    [ -n "$SHORT_ID" ]   || error "缺少 ShortId，请先执行步骤 3"
+    [ -n "$UUID" ]       || error "缺少配置参数，请先执行安装步骤 3"
+    [ -n "$PUBLIC_KEY" ] || error "缺少 PublicKey，请先执行安装步骤 3"
+    [ -n "$PORT" ]       || error "缺少 PORT，请先执行安装步骤 3"
+    [ -n "$SHORT_ID" ]   || error "缺少 ShortId，请先执行安装步骤 3"
+    [ -n "$SNI" ]        || error "缺少 SNI，请先执行安装步骤 3"
 
     info "获取公网 IP..."
 
@@ -308,7 +333,7 @@ step7_show_info() {
         || echo ""
     )
 
-    VLESS_PARAMS="encryption=none&flow=xtls-rprx-vision&security=reality&sni=www.zhihu.com&fp=chrome&pbk=${PUBLIC_KEY}&sid=${SHORT_ID}&type=tcp"
+    VLESS_PARAMS="encryption=none&flow=xtls-rprx-vision&security=reality&sni=${SNI}&fp=chrome&pbk=${PUBLIC_KEY}&sid=${SHORT_ID}&type=tcp"
 
     [ -n "$SERVER_IPV4" ] && VLESS_LINK_V4="vless://${UUID}@${SERVER_IPV4}:${PORT}?${VLESS_PARAMS}#Xray-Reality-v4"
     [ -n "$SERVER_IPV6" ] && VLESS_LINK_V6="vless://${UUID}@[${SERVER_IPV6}]:${PORT}?${VLESS_PARAMS}#Xray-Reality-v6"
@@ -335,10 +360,16 @@ step7_show_info() {
     echo -e "  ${BOLD}Flow${RESET}        : xtls-rprx-vision"
     echo -e "  ${BOLD}传输${RESET}        : TCP"
     echo -e "  ${BOLD}安全${RESET}        : reality"
-    echo -e "  ${BOLD}SNI${RESET}         : www.zhihu.com"
+    echo -e "  ${BOLD}SNI${RESET}         : ${SNI}"
     echo -e "  ${BOLD}PublicKey${RESET}   : ${YELLOW}${PUBLIC_KEY}${RESET}"
     echo -e "  ${BOLD}ShortId${RESET}     : ${YELLOW}${SHORT_ID}${RESET}"
     echo -e "  ${BOLD}Fingerprint${RESET} : chrome"
+
+    echo
+    echo -e "  ${BOLD}--- Nikki/Clash 节点格式 ---${RESET}"
+    if [ -n "$SERVER_IPV4" ]; then
+        echo -e "  ${CYAN}- {name: VLESS-Reality-节点, type: vless, server: ${SERVER_IPV4}, port: ${PORT}, uuid: ${UUID}, network: tcp, tls: true, flow: xtls-rprx-vision, servername: ${SNI}, reality-opts: {public-key: ${PUBLIC_KEY}, short-id: \"${SHORT_ID}\"}, client-fingerprint: chrome}${RESET}"
+    fi
 
     if [ -n "$VLESS_LINK_V4" ] || [ -n "$VLESS_LINK_V6" ]; then
         echo
@@ -358,15 +389,113 @@ step7_show_info() {
 }
 
 # ==============================================================
+#  卸载步骤
+# ==============================================================
+
+step_remove_1() {
+    echo -e "\n${BOLD}[卸载 1/5] 停止服务并移除开机自启${RESET}"
+
+    if [ -f /etc/init.d/xray ]; then
+        info "停止 Xray 服务..."
+        rc-service xray stop > /dev/null 2>&1 || true
+        rc-update del xray default > /dev/null 2>&1 || true
+        success "服务已停止，开机自启已移除"
+    else
+        warn "未找到 OpenRC 服务文件，跳过"
+    fi
+}
+
+step_remove_2() {
+    echo -e "\n${BOLD}[卸载 2/5] 删除 OpenRC 服务文件${RESET}"
+
+    if [ -f /etc/init.d/xray ]; then
+        rm -f /etc/init.d/xray
+        success "已删除 /etc/init.d/xray"
+    else
+        warn "/etc/init.d/xray 不存在，跳过"
+    fi
+
+    rm -f /run/xray.pid
+}
+
+step_remove_3() {
+    echo -e "\n${BOLD}[卸载 3/5] 删除二进制文件${RESET}"
+
+    if [ -f "$BIN_PATH" ]; then
+        rm -f "$BIN_PATH"
+        success "已删除 ${BIN_PATH}"
+    else
+        warn "${BIN_PATH} 不存在，跳过"
+    fi
+}
+
+step_remove_4() {
+    echo -e "\n${BOLD}[卸载 4/5] 删除配置目录（配置文件 / 状态文件）${RESET}"
+
+    if [ -d /etc/xray ]; then
+        info "将删除以下内容："
+        ls -la /etc/xray/ 2>/dev/null || true
+        echo
+        read -rp "$(echo -e "${YELLOW}确认删除 /etc/xray 目录？[y/N]：${RESET}")" CONFIRM
+        case "$CONFIRM" in
+            y|Y|yes|YES)
+                rm -rf /etc/xray
+                success "已删除 /etc/xray/"
+                ;;
+            *)
+                warn "已跳过，目录保留"
+                ;;
+        esac
+    else
+        warn "/etc/xray 目录不存在，跳过"
+    fi
+}
+
+step_remove_5() {
+    echo -e "\n${BOLD}[卸载 5/5] 删除日志文件${RESET}"
+
+    REMOVED=0
+    for f in /var/log/xray-stdout.log /var/log/xray-error.log /var/log/xray-access.log; do
+        if [ -f "$f" ]; then
+            rm -f "$f"
+            success "已删除 ${f}"
+            REMOVED=$((REMOVED + 1))
+        fi
+    done
+
+    if [ "$REMOVED" -eq 0 ]; then
+        warn "未找到日志文件，跳过"
+    fi
+
+    echo
+    echo -e "${BOLD}${GREEN}============================================${RESET}"
+    echo -e "${BOLD}${GREEN}           Xray 卸载完成                   ${RESET}"
+    echo -e "${BOLD}${GREEN}============================================${RESET}"
+    echo
+}
+
+# ==============================================================
 #  菜单
 # ==============================================================
 
-show_menu() {
+show_main_menu() {
     echo
     echo -e "${BOLD}======================================${RESET}"
-    echo -e "${BOLD}   Xray VLESS+Reality 分步安装器     ${RESET}"
+    echo -e "${BOLD}   Xray VLESS+Reality 管理脚本       ${RESET}"
     echo -e "${BOLD}   Alpine Linux 版本                 ${RESET}"
     echo -e "${BOLD}======================================${RESET}"
+    echo
+    echo -e "  ${GREEN}i${RESET}  安装 Xray VLESS+Reality"
+    echo -e "  ${RED}r${RESET}  卸载 Xray VLESS+Reality"
+    echo -e "  ${CYAN}q${RESET}  退出"
+    echo
+}
+
+show_install_menu() {
+    echo
+    echo -e "${BOLD}${GREEN}======================================${RESET}"
+    echo -e "${BOLD}${GREEN}   Xray 安装步骤                     ${RESET}"
+    echo -e "${BOLD}${GREEN}======================================${RESET}"
     echo
     echo -e "  ${CYAN}1${RESET}  安装系统依赖"
     echo -e "  ${CYAN}2${RESET}  下载并安装 Xray 二进制"
@@ -375,36 +504,122 @@ show_menu() {
     echo -e "  ${CYAN}5${RESET}  验证配置文件"
     echo -e "  ${CYAN}6${RESET}  创建并启动 OpenRC 服务"
     echo -e "  ${CYAN}7${RESET}  输出客户端配置 & 分享链接"
-    echo -e "  ${CYAN}all${RESET} 一次性执行全部步骤"
+    echo -e "  ${CYAN}all${RESET} 一次性执行全部安装步骤"
+    echo -e "  ${CYAN}b${RESET}  返回主菜单"
     echo -e "  ${CYAN}q${RESET}  退出"
     echo
     echo -e "提示：执行步骤 3 时可通过环境变量指定端口，例如："
-    echo -e "  ${YELLOW}PORT=25443 bash $0 3${RESET}"
+    echo -e "  ${YELLOW}PORT=25443 bash $0 install 3${RESET}"
     echo
 }
 
-run_step() {
+show_remove_menu() {
+    echo
+    echo -e "${BOLD}${RED}======================================${RESET}"
+    echo -e "${BOLD}${RED}   Xray 卸载步骤                     ${RESET}"
+    echo -e "${BOLD}${RED}======================================${RESET}"
+    echo
+    echo -e "  ${CYAN}1${RESET}  停止服务并移除开机自启"
+    echo -e "  ${CYAN}2${RESET}  删除 OpenRC 服务文件"
+    echo -e "  ${CYAN}3${RESET}  删除二进制文件"
+    echo -e "  ${CYAN}4${RESET}  删除配置目录（配置文件 / 状态文件）"
+    echo -e "  ${CYAN}5${RESET}  删除日志文件"
+    echo -e "  ${CYAN}all${RESET} 一次性执行全部卸载步骤"
+    echo -e "  ${CYAN}b${RESET}  返回主菜单"
+    echo -e "  ${CYAN}q${RESET}  退出"
+    echo
+}
+
+run_install_step() {
     case "$1" in
-        1)   step1_install_deps   ;;
-        2)   step2_download_xray  ;;
-        3)   step3_gen_params     ;;
-        4)   step4_write_config   ;;
-        5)   step5_verify_config  ;;
-        6)   step6_setup_service  ;;
-        7)   step7_show_info      ;;
+        1)   step_install_1 ;;
+        2)   step_install_2 ;;
+        3)   step_install_3 ;;
+        4)   step_install_4 ;;
+        5)   step_install_5 ;;
+        6)   step_install_6 ;;
+        7)   step_install_7 ;;
         all)
-            step1_install_deps
-            step2_download_xray
-            step3_gen_params
-            step4_write_config
-            step5_verify_config
-            step6_setup_service
-            step7_show_info
+            step_install_1
+            step_install_2
+            step_install_3
+            step_install_4
+            step_install_5
+            step_install_6
+            step_install_7
             ;;
-        *)
-            echo -e "${RED}无效选项：$1${RESET}"
-            ;;
+        b|B) return 1 ;;
+        q|Q|quit|exit) echo "退出。"; exit 0 ;;
+        *) echo -e "${RED}无效选项：$1${RESET}" ;;
     esac
+    return 0
+}
+
+run_remove_step() {
+    case "$1" in
+        1)   step_remove_1 ;;
+        2)   step_remove_2 ;;
+        3)   step_remove_3 ;;
+        4)   step_remove_4 ;;
+        5)   step_remove_5 ;;
+        all)
+            step_remove_1
+            step_remove_2
+            step_remove_3
+            step_remove_4
+            step_remove_5
+            ;;
+        b|B) return 1 ;;
+        q|Q|quit|exit) echo "退出。"; exit 0 ;;
+        *) echo -e "${RED}无效选项：$1${RESET}" ;;
+    esac
+    return 0
+}
+
+# ── 安装子菜单循环 ────────────────────────────────────────────
+enter_install_mode() {
+    show_install_menu
+    while true; do
+        read -rp "$(echo -e "${BOLD}安装步骤（1-7 / all / b / q）：${RESET}")" CHOICE
+        case "$CHOICE" in
+            b|B) return ;;
+            q|Q|quit|exit) echo "退出。"; exit 0 ;;
+            "") show_install_menu; continue ;;
+        esac
+        run_install_step "$CHOICE" || return
+        echo
+        read -rp "$(echo -e "${CYAN}按 Enter 返回安装菜单，或输入下一步骤号：${RESET}")" NEXT
+        if [ -n "$NEXT" ]; then
+            case "$NEXT" in
+                b|B) return ;;
+                q|Q|quit|exit) echo "退出。"; exit 0 ;;
+            esac
+            run_install_step "$NEXT" || return
+        fi
+    done
+}
+
+# ── 卸载子菜单循环 ────────────────────────────────────────────
+enter_remove_mode() {
+    show_remove_menu
+    while true; do
+        read -rp "$(echo -e "${BOLD}卸载步骤（1-5 / all / b / q）：${RESET}")" CHOICE
+        case "$CHOICE" in
+            b|B) return ;;
+            q|Q|quit|exit) echo "退出。"; exit 0 ;;
+            "") show_remove_menu; continue ;;
+        esac
+        run_remove_step "$CHOICE" || return
+        echo
+        read -rp "$(echo -e "${CYAN}按 Enter 返回卸载菜单，或输入下一步骤号：${RESET}")" NEXT
+        if [ -n "$NEXT" ]; then
+            case "$NEXT" in
+                b|B) return ;;
+                q|Q|quit|exit) echo "退出。"; exit 0 ;;
+            esac
+            run_remove_step "$NEXT" || return
+        fi
+    done
 }
 
 # ==============================================================
@@ -413,26 +628,40 @@ run_step() {
 
 check_root
 
-# 支持通过环境变量传入端口（用于步骤 3）
+# 支持通过环境变量传入端口（用于安装步骤 3）
 CMD_PORT="${PORT:-}"
 
-if [ -n "$1" ]; then
-    # 命令行直接指定步骤
-    run_step "$1"
-else
-    # 交互菜单
-    show_menu
-    while true; do
-        read -rp "$(echo -e "${BOLD}请输入步骤编号（1-7 / all / q）：${RESET}")" CHOICE
-        case "$CHOICE" in
-            q|Q|quit|exit) echo "退出。"; exit 0 ;;
-            "") show_menu ;;
-            *) run_step "$CHOICE" ;;
-        esac
-        echo
-        read -rp "$(echo -e "${CYAN}按 Enter 返回菜单，或输入下一个步骤号：${RESET}")" NEXT
-        if [ -n "$NEXT" ]; then
-            run_step "$NEXT"
+case "$1" in
+    install)
+        if [ -n "$2" ]; then
+            run_install_step "$2"
+        else
+            enter_install_mode
         fi
-    done
-fi
+        ;;
+    remove|uninstall)
+        if [ -n "$2" ]; then
+            run_remove_step "$2"
+        else
+            enter_remove_mode
+        fi
+        ;;
+    "")
+        show_main_menu
+        while true; do
+            read -rp "$(echo -e "${BOLD}请选择操作（i 安装 / r 卸载 / q 退出）：${RESET}")" CHOICE
+            case "$CHOICE" in
+                i|I|install)   enter_install_mode; show_main_menu ;;
+                r|R|remove)    enter_remove_mode;  show_main_menu ;;
+                q|Q|quit|exit) echo "退出。"; exit 0 ;;
+                "") show_main_menu ;;
+                *) echo -e "${RED}无效选项，请输入 i / r / q${RESET}" ;;
+            esac
+        done
+        ;;
+    *)
+        echo -e "${RED}未知参数：$1${RESET}"
+        echo "用法：bash $0 [install|remove] [步骤号/all]"
+        exit 1
+        ;;
+esac

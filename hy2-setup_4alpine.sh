@@ -1,13 +1,17 @@
 #!/bin/bash
 # ==============================================================
-#  Hysteria2 一键安装脚本（Alpine Linux，分步版）
+#  Hysteria2 安装 / 卸载脚本（Alpine Linux，分步版）
 #
 #  用法：
-#    bash hysteria2-steps.sh          # 显示步骤菜单
-#    bash hysteria2-steps.sh <步骤号>  # 直接执行某步
-#    bash hysteria2-steps.sh all      # 一次性执行全部步骤
+#    bash hysteria2-steps.sh              # 主菜单（选安装或卸载）
+#    bash hysteria2-steps.sh install      # 直接进入安装菜单
+#    bash hysteria2-steps.sh install <N>  # 直接执行安装步骤 N
+#    bash hysteria2-steps.sh install all  # 一次性完整安装
+#    bash hysteria2-steps.sh remove       # 直接进入卸载菜单
+#    bash hysteria2-steps.sh remove <N>   # 直接执行卸载步骤 N
+#    bash hysteria2-steps.sh remove all   # 一次性完整卸载
 #
-#  步骤列表：
+#  安装步骤：
 #    1  安装系统依赖
 #    2  下载并安装 Hysteria2 二进制
 #    3  生成端口 / 密码 / 自签证书（写入状态文件）
@@ -16,10 +20,17 @@
 #    6  创建并启动 OpenRC 服务
 #    7  输出客户端配置 & 分享链接
 #
+#  卸载步骤：
+#    1  停止服务并移除开机自启
+#    2  删除 OpenRC 服务文件
+#    3  删除二进制文件
+#    4  删除配置目录（配置文件 / 证书 / 状态文件）
+#    5  删除日志文件
+#
 #  状态文件：/etc/hysteria/.install_state
 #  说明：Hysteria2 基于 QUIC（UDP），默认使用自签证书 + 客户端
 #        insecure 跳过校验的方式（不依赖真实域名）。
-#        如需更换端口/密码，修改后从步骤 3 重新执行即可。
+#        如需更换端口/密码，修改后从安装步骤 3 重新执行即可。
 # ==============================================================
 
 set -eo pipefail
@@ -33,8 +44,9 @@ success() { echo -e "${GREEN}[OK]${RESET}    $*"; }
 warn()    { echo -e "${YELLOW}[WARN]${RESET}  $*"; }
 error()   { echo -e "${RED}[ERROR]${RESET} $*"; exit 1; }
 
-# ─── 状态文件路径 ─────────────────────────────────────────────
+# ─── 路径常量 ─────────────────────────────────────────────────
 STATE_FILE="/etc/hysteria/.install_state"
+BIN_PATH="/usr/local/bin/hysteria"
 
 # ─── 保存 / 读取状态 ──────────────────────────────────────────
 save_state() {
@@ -51,8 +63,7 @@ STEOF
 
 load_state() {
     if [ -f "$STATE_FILE" ]; then
-        # shellcheck source=/dev/null
-        . "$STATE_FILE"
+        . "$STATE_FILE" || true
     fi
 }
 
@@ -62,19 +73,19 @@ check_root() {
 }
 
 # ==============================================================
-#  各步骤函数
+#  安装步骤
 # ==============================================================
 
-step1_install_deps() {
-    echo -e "\n${BOLD}[步骤 1] 安装系统依赖${RESET}"
+step_install_1() {
+    echo -e "\n${BOLD}[安装 1/7] 安装系统依赖${RESET}"
     [ -f /etc/alpine-release ] || warn "未检测到 Alpine Linux，继续执行..."
     apk update -q
     apk add -q curl openssl bash
     success "依赖安装完成（curl openssl bash）"
 }
 
-step2_download_hysteria() {
-    echo -e "\n${BOLD}[步骤 2] 下载并安装 Hysteria2${RESET}"
+step_install_2() {
+    echo -e "\n${BOLD}[安装 2/7] 下载并安装 Hysteria2${RESET}"
 
     info "获取 Hysteria2 最新版本..."
     HY_VER_TAG=$(curl -fsSL -o /dev/null -w "%{url_effective}" \
@@ -95,18 +106,18 @@ step2_download_hysteria() {
     DOWNLOAD_URL="https://github.com/apernet/hysteria/releases/download/${HY_VER_TAG}/${BIN_NAME}"
 
     info "下载 ${BIN_NAME}..."
-    curl -fsSL "$DOWNLOAD_URL" -o /usr/local/bin/hysteria \
+    curl -fsSL "$DOWNLOAD_URL" -o "$BIN_PATH" \
         || error "下载失败，请检查网络"
 
-    chmod +x /usr/local/bin/hysteria
-    success "Hysteria2 ${HY_VER_TAG} 安装完成 → /usr/local/bin/hysteria"
+    chmod +x "$BIN_PATH"
+    success "Hysteria2 ${HY_VER_TAG} 安装完成 → ${BIN_PATH}"
 
     info "版本信息："
-    /usr/local/bin/hysteria version || true
+    "$BIN_PATH" version || true
 }
 
-step3_gen_params() {
-    echo -e "\n${BOLD}[步骤 3] 生成端口 / 密码 / 自签证书${RESET}"
+step_install_3() {
+    echo -e "\n${BOLD}[安装 3/7] 生成端口 / 密码 / 自签证书${RESET}"
 
     load_state
 
@@ -128,11 +139,11 @@ step3_gen_params() {
     if [ -z "$MASQ_DOMAIN" ]; then
         MASQ_DOMAIN="www.bing.com"
     fi
-    info "伪装/证书域名：${MASQ_DOMAIN}（可在步骤4前修改状态文件自定义）"
+    info "伪装/证书域名：${MASQ_DOMAIN}（可在安装步骤4前修改状态文件自定义）"
 
     # ── 密码 ──
     info "生成连接密码..."
-    PASSWORD=$(openssl rand -base64 16 | tr -d '=+/' | head -c 24)
+    PASSWORD=$(openssl rand -base64 16 | tr -d '=+/' | { head -c 24; cat > /dev/null; })
     [ -n "$PASSWORD" ] || error "密码生成失败"
     success "密码：${PASSWORD}"
 
@@ -156,14 +167,14 @@ step3_gen_params() {
     success "参数已保存到 ${STATE_FILE}"
 }
 
-step4_write_config() {
-    echo -e "\n${BOLD}[步骤 4] 写入 Hysteria2 配置文件${RESET}"
+step_install_4() {
+    echo -e "\n${BOLD}[安装 4/7] 写入 Hysteria2 配置文件${RESET}"
 
     load_state
-    [ -n "$PORT" ]      || error "缺少 PORT，请先执行步骤 3"
-    [ -n "$PASSWORD" ]  || error "缺少 PASSWORD，请先执行步骤 3"
-    [ -n "$CERT_PATH" ] || error "缺少证书路径，请先执行步骤 3"
-    [ -f "$CERT_PATH" ] || error "证书文件不存在，请先执行步骤 3"
+    [ -n "$PORT" ]      || error "缺少 PORT，请先执行安装步骤 3"
+    [ -n "$PASSWORD" ]  || error "缺少 PASSWORD，请先执行安装步骤 3"
+    [ -n "$CERT_PATH" ] || error "缺少证书路径，请先执行安装步骤 3"
+    [ -f "$CERT_PATH" ] || error "证书文件不存在，请先执行安装步骤 3"
 
     mkdir -p /etc/hysteria
 
@@ -194,40 +205,37 @@ EOF
     success "配置文件已写入 /etc/hysteria/config.yaml"
 }
 
-step5_verify_config() {
-    echo -e "\n${BOLD}[步骤 5] 验证配置文件${RESET}"
+step_install_5() {
+    echo -e "\n${BOLD}[安装 5/7] 验证配置文件${RESET}"
 
-    command -v hysteria > /dev/null 2>&1 || error "未找到 hysteria，请先执行步骤 2"
-    [ -f /etc/hysteria/config.yaml ]     || error "配置文件不存在，请先执行步骤 4"
+    command -v hysteria > /dev/null 2>&1 || error "未找到 hysteria，请先执行安装步骤 2"
+    [ -f /etc/hysteria/config.yaml ]     || error "配置文件不存在，请先执行安装步骤 4"
 
     info "检查 YAML 语法与基础字段..."
-    # Hysteria2 没有像 xray 那样的 -test 子命令，这里做轻量级自检：
-    # 1) 用 hysteria 自带帮助确认二进制可执行
-    # 2) 校验关键字段是否齐全
     hysteria version > /dev/null 2>&1 || error "hysteria 二进制无法执行"
 
     for field in "listen:" "tls:" "auth:" "password:"; do
         grep -q "$field" /etc/hysteria/config.yaml \
-            || error "配置文件缺少必要字段：${field}，请检查步骤 4"
+            || error "配置文件缺少必要字段：${field}，请检查安装步骤 4"
     done
 
     success "配置文件基础检查通过"
-    info "（Hysteria2 的完整校验会在启动服务时进行，见步骤 6）"
+    info "（Hysteria2 的完整校验会在启动服务时进行，见安装步骤 6）"
 }
 
-step6_setup_service() {
-    echo -e "\n${BOLD}[步骤 6] 创建并启动 OpenRC 服务${RESET}"
+step_install_6() {
+    echo -e "\n${BOLD}[安装 6/7] 创建并启动 OpenRC 服务${RESET}"
 
-    [ -f /etc/hysteria/config.yaml ] || error "配置文件不存在，请先执行步骤 4"
+    [ -f /etc/hysteria/config.yaml ] || error "配置文件不存在，请先执行安装步骤 4"
 
     info "写入 /etc/init.d/hysteria..."
-    cat > /etc/init.d/hysteria << 'INITEOF'
+    cat > /etc/init.d/hysteria << INITEOF
 #!/sbin/openrc-run
 
 name="hysteria"
 description="Hysteria2 Proxy Service"
 
-command="/usr/local/bin/hysteria"
+command="${BIN_PATH}"
 command_args="server -c /etc/hysteria/config.yaml"
 command_background=true
 pidfile="/run/hysteria.pid"
@@ -247,10 +255,10 @@ INITEOF
     info "启动 Hysteria2 服务..."
     rc-service hysteria restart > /dev/null 2>&1 \
         || rc-service hysteria start > /dev/null 2>&1 \
-        || error "Hysteria2 启动失败，查看日志：tail -f /var/log/hysteria-error.log"
+        || true
 
     rc-update add hysteria default > /dev/null 2>&1
-    success "Hysteria2 服务已启动并设为开机自启"
+    success "Hysteria2 已设为开机自启"
 
     info "等待 2 秒后检查进程状态..."
     sleep 2
@@ -258,17 +266,21 @@ INITEOF
     rc-service hysteria status || true
 
     if ! pgrep -f "hysteria server" > /dev/null 2>&1; then
-        warn "进程未检测到，请查看日志：tail -f /var/log/hysteria-error.log"
+        echo
+        warn "进程未检测到，最近的错误日志："
+        tail -n 20 /var/log/hysteria-error.log 2>/dev/null || warn "日志文件不存在"
+        echo
+        error "服务未正常启动，请根据以上日志排查后重新执行本步骤"
     fi
 }
 
-step7_show_info() {
-    echo -e "\n${BOLD}[步骤 7] 输出客户端配置${RESET}"
+step_install_7() {
+    echo -e "\n${BOLD}[安装 7/7] 输出客户端配置${RESET}"
 
     load_state
-    [ -n "$PASSWORD" ]    || error "缺少配置参数，请先执行步骤 3"
-    [ -n "$PORT" ]        || error "缺少 PORT，请先执行步骤 3"
-    [ -n "$MASQ_DOMAIN" ] || error "缺少伪装域名，请先执行步骤 3"
+    [ -n "$PASSWORD" ]    || error "缺少配置参数，请先执行安装步骤 3"
+    [ -n "$PORT" ]        || error "缺少 PORT，请先执行安装步骤 3"
+    [ -n "$MASQ_DOMAIN" ] || error "缺少伪装域名，请先执行安装步骤 3"
 
     info "获取公网 IP..."
 
@@ -285,7 +297,6 @@ step7_show_info() {
         || echo ""
     )
 
-    # 自签证书，客户端需要 insecure=1（跳过证书校验）
     HY_PARAMS="insecure=1&sni=${MASQ_DOMAIN}"
 
     [ -n "$SERVER_IPV4" ] && HY_LINK_V4="hysteria2://${PASSWORD}@${SERVER_IPV4}:${PORT}/?${HY_PARAMS}#Hysteria2-v4"
@@ -311,7 +322,13 @@ step7_show_info() {
     echo -e "  ${BOLD}协议${RESET}        : Hysteria2"
     echo -e "  ${BOLD}密码${RESET}        : ${YELLOW}${PASSWORD}${RESET}"
     echo -e "  ${BOLD}SNI${RESET}         : ${MASQ_DOMAIN}"
-    echo -e "  ${BOLD}证书校验${RESET}    : 跳过校验（自签证书，客户端需设置 insecure/allowInsecure=true）"
+    echo -e "  ${BOLD}证书校验${RESET}    : 跳过校验（自签证书，客户端需设置 insecure/skip-cert-verify=true）"
+
+    echo
+    echo -e "  ${BOLD}--- Nikki/Clash 节点格式 ---${RESET}"
+    if [ -n "$SERVER_IPV4" ]; then
+        echo -e "  ${CYAN}- {name: HY2-节点, type: hysteria2, server: ${SERVER_IPV4}, port: ${PORT}, password: ${PASSWORD}, sni: ${MASQ_DOMAIN}, skip-cert-verify: true, alpn: [h3]}${RESET}"
+    fi
 
     if [ -n "$HY_LINK_V4" ] || [ -n "$HY_LINK_V6" ]; then
         echo
@@ -333,15 +350,113 @@ step7_show_info() {
 }
 
 # ==============================================================
+#  卸载步骤
+# ==============================================================
+
+step_remove_1() {
+    echo -e "\n${BOLD}[卸载 1/5] 停止服务并移除开机自启${RESET}"
+
+    if [ -f /etc/init.d/hysteria ]; then
+        info "停止 Hysteria2 服务..."
+        rc-service hysteria stop > /dev/null 2>&1 || true
+        rc-update del hysteria default > /dev/null 2>&1 || true
+        success "服务已停止，开机自启已移除"
+    else
+        warn "未找到 OpenRC 服务文件，跳过"
+    fi
+}
+
+step_remove_2() {
+    echo -e "\n${BOLD}[卸载 2/5] 删除 OpenRC 服务文件${RESET}"
+
+    if [ -f /etc/init.d/hysteria ]; then
+        rm -f /etc/init.d/hysteria
+        success "已删除 /etc/init.d/hysteria"
+    else
+        warn "/etc/init.d/hysteria 不存在，跳过"
+    fi
+
+    rm -f /run/hysteria.pid
+}
+
+step_remove_3() {
+    echo -e "\n${BOLD}[卸载 3/5] 删除二进制文件${RESET}"
+
+    if [ -f "$BIN_PATH" ]; then
+        rm -f "$BIN_PATH"
+        success "已删除 ${BIN_PATH}"
+    else
+        warn "${BIN_PATH} 不存在，跳过"
+    fi
+}
+
+step_remove_4() {
+    echo -e "\n${BOLD}[卸载 4/5] 删除配置目录（配置文件 / 证书 / 状态文件）${RESET}"
+
+    if [ -d /etc/hysteria ]; then
+        info "将删除以下内容："
+        ls -la /etc/hysteria/ 2>/dev/null || true
+        echo
+        read -rp "$(echo -e "${YELLOW}确认删除 /etc/hysteria 目录？[y/N]：${RESET}")" CONFIRM
+        case "$CONFIRM" in
+            y|Y|yes|YES)
+                rm -rf /etc/hysteria
+                success "已删除 /etc/hysteria/"
+                ;;
+            *)
+                warn "已跳过，目录保留"
+                ;;
+        esac
+    else
+        warn "/etc/hysteria 目录不存在，跳过"
+    fi
+}
+
+step_remove_5() {
+    echo -e "\n${BOLD}[卸载 5/5] 删除日志文件${RESET}"
+
+    REMOVED=0
+    for f in /var/log/hysteria-stdout.log /var/log/hysteria-error.log; do
+        if [ -f "$f" ]; then
+            rm -f "$f"
+            success "已删除 ${f}"
+            REMOVED=$((REMOVED + 1))
+        fi
+    done
+
+    if [ "$REMOVED" -eq 0 ]; then
+        warn "未找到日志文件，跳过"
+    fi
+
+    echo
+    echo -e "${BOLD}${GREEN}============================================${RESET}"
+    echo -e "${BOLD}${GREEN}           Hysteria2 卸载完成               ${RESET}"
+    echo -e "${BOLD}${GREEN}============================================${RESET}"
+    echo
+}
+
+# ==============================================================
 #  菜单
 # ==============================================================
 
-show_menu() {
+show_main_menu() {
     echo
     echo -e "${BOLD}======================================${RESET}"
-    echo -e "${BOLD}   Hysteria2 分步安装器              ${RESET}"
+    echo -e "${BOLD}   Hysteria2 管理脚本                ${RESET}"
     echo -e "${BOLD}   Alpine Linux 版本                 ${RESET}"
     echo -e "${BOLD}======================================${RESET}"
+    echo
+    echo -e "  ${GREEN}i${RESET}  安装 Hysteria2"
+    echo -e "  ${RED}r${RESET}  卸载 Hysteria2"
+    echo -e "  ${CYAN}q${RESET}  退出"
+    echo
+}
+
+show_install_menu() {
+    echo
+    echo -e "${BOLD}${GREEN}======================================${RESET}"
+    echo -e "${BOLD}${GREEN}   Hysteria2 安装步骤                ${RESET}"
+    echo -e "${BOLD}${GREEN}======================================${RESET}"
     echo
     echo -e "  ${CYAN}1${RESET}  安装系统依赖"
     echo -e "  ${CYAN}2${RESET}  下载并安装 Hysteria2 二进制"
@@ -350,36 +465,122 @@ show_menu() {
     echo -e "  ${CYAN}5${RESET}  验证配置文件"
     echo -e "  ${CYAN}6${RESET}  创建并启动 OpenRC 服务"
     echo -e "  ${CYAN}7${RESET}  输出客户端配置 & 分享链接"
-    echo -e "  ${CYAN}all${RESET} 一次性执行全部步骤"
+    echo -e "  ${CYAN}all${RESET} 一次性执行全部安装步骤"
+    echo -e "  ${CYAN}b${RESET}  返回主菜单"
     echo -e "  ${CYAN}q${RESET}  退出"
     echo
     echo -e "提示：执行步骤 3 时可通过环境变量指定端口，例如："
-    echo -e "  ${YELLOW}PORT=28443 bash $0 3${RESET}"
+    echo -e "  ${YELLOW}PORT=28443 bash $0 install 3${RESET}"
     echo
 }
 
-run_step() {
+show_remove_menu() {
+    echo
+    echo -e "${BOLD}${RED}======================================${RESET}"
+    echo -e "${BOLD}${RED}   Hysteria2 卸载步骤                ${RESET}"
+    echo -e "${BOLD}${RED}======================================${RESET}"
+    echo
+    echo -e "  ${CYAN}1${RESET}  停止服务并移除开机自启"
+    echo -e "  ${CYAN}2${RESET}  删除 OpenRC 服务文件"
+    echo -e "  ${CYAN}3${RESET}  删除二进制文件"
+    echo -e "  ${CYAN}4${RESET}  删除配置目录（配置文件 / 证书 / 状态文件）"
+    echo -e "  ${CYAN}5${RESET}  删除日志文件"
+    echo -e "  ${CYAN}all${RESET} 一次性执行全部卸载步骤"
+    echo -e "  ${CYAN}b${RESET}  返回主菜单"
+    echo -e "  ${CYAN}q${RESET}  退出"
+    echo
+}
+
+run_install_step() {
     case "$1" in
-        1)   step1_install_deps     ;;
-        2)   step2_download_hysteria ;;
-        3)   step3_gen_params       ;;
-        4)   step4_write_config     ;;
-        5)   step5_verify_config    ;;
-        6)   step6_setup_service    ;;
-        7)   step7_show_info        ;;
+        1)   step_install_1 ;;
+        2)   step_install_2 ;;
+        3)   step_install_3 ;;
+        4)   step_install_4 ;;
+        5)   step_install_5 ;;
+        6)   step_install_6 ;;
+        7)   step_install_7 ;;
         all)
-            step1_install_deps
-            step2_download_hysteria
-            step3_gen_params
-            step4_write_config
-            step5_verify_config
-            step6_setup_service
-            step7_show_info
+            step_install_1
+            step_install_2
+            step_install_3
+            step_install_4
+            step_install_5
+            step_install_6
+            step_install_7
             ;;
-        *)
-            echo -e "${RED}无效选项：$1${RESET}"
-            ;;
+        b|B) return 1 ;;
+        q|Q|quit|exit) echo "退出。"; exit 0 ;;
+        *) echo -e "${RED}无效选项：$1${RESET}" ;;
     esac
+    return 0
+}
+
+run_remove_step() {
+    case "$1" in
+        1)   step_remove_1 ;;
+        2)   step_remove_2 ;;
+        3)   step_remove_3 ;;
+        4)   step_remove_4 ;;
+        5)   step_remove_5 ;;
+        all)
+            step_remove_1
+            step_remove_2
+            step_remove_3
+            step_remove_4
+            step_remove_5
+            ;;
+        b|B) return 1 ;;
+        q|Q|quit|exit) echo "退出。"; exit 0 ;;
+        *) echo -e "${RED}无效选项：$1${RESET}" ;;
+    esac
+    return 0
+}
+
+# ── 安装子菜单循环 ────────────────────────────────────────────
+enter_install_mode() {
+    show_install_menu
+    while true; do
+        read -rp "$(echo -e "${BOLD}安装步骤（1-7 / all / b / q）：${RESET}")" CHOICE
+        case "$CHOICE" in
+            b|B) return ;;
+            q|Q|quit|exit) echo "退出。"; exit 0 ;;
+            "") show_install_menu; continue ;;
+        esac
+        run_install_step "$CHOICE" || return
+        echo
+        read -rp "$(echo -e "${CYAN}按 Enter 返回安装菜单，或输入下一步骤号：${RESET}")" NEXT
+        if [ -n "$NEXT" ]; then
+            case "$NEXT" in
+                b|B) return ;;
+                q|Q|quit|exit) echo "退出。"; exit 0 ;;
+            esac
+            run_install_step "$NEXT" || return
+        fi
+    done
+}
+
+# ── 卸载子菜单循环 ────────────────────────────────────────────
+enter_remove_mode() {
+    show_remove_menu
+    while true; do
+        read -rp "$(echo -e "${BOLD}卸载步骤（1-5 / all / b / q）：${RESET}")" CHOICE
+        case "$CHOICE" in
+            b|B) return ;;
+            q|Q|quit|exit) echo "退出。"; exit 0 ;;
+            "") show_remove_menu; continue ;;
+        esac
+        run_remove_step "$CHOICE" || return
+        echo
+        read -rp "$(echo -e "${CYAN}按 Enter 返回卸载菜单，或输入下一步骤号：${RESET}")" NEXT
+        if [ -n "$NEXT" ]; then
+            case "$NEXT" in
+                b|B) return ;;
+                q|Q|quit|exit) echo "退出。"; exit 0 ;;
+            esac
+            run_remove_step "$NEXT" || return
+        fi
+    done
 }
 
 # ==============================================================
@@ -388,26 +589,40 @@ run_step() {
 
 check_root
 
-# 支持通过环境变量传入端口（用于步骤 3）
+# 支持通过环境变量传入端口（用于安装步骤 3）
 CMD_PORT="${PORT:-}"
 
-if [ -n "$1" ]; then
-    # 命令行直接指定步骤
-    run_step "$1"
-else
-    # 交互菜单
-    show_menu
-    while true; do
-        read -rp "$(echo -e "${BOLD}请输入步骤编号（1-7 / all / q）：${RESET}")" CHOICE
-        case "$CHOICE" in
-            q|Q|quit|exit) echo "退出。"; exit 0 ;;
-            "") show_menu ;;
-            *) run_step "$CHOICE" ;;
-        esac
-        echo
-        read -rp "$(echo -e "${CYAN}按 Enter 返回菜单，或输入下一个步骤号：${RESET}")" NEXT
-        if [ -n "$NEXT" ]; then
-            run_step "$NEXT"
+case "$1" in
+    install)
+        if [ -n "$2" ]; then
+            run_install_step "$2"
+        else
+            enter_install_mode
         fi
-    done
-fi
+        ;;
+    remove|uninstall)
+        if [ -n "$2" ]; then
+            run_remove_step "$2"
+        else
+            enter_remove_mode
+        fi
+        ;;
+    "")
+        show_main_menu
+        while true; do
+            read -rp "$(echo -e "${BOLD}请选择操作（i 安装 / r 卸载 / q 退出）：${RESET}")" CHOICE
+            case "$CHOICE" in
+                i|I|install)   enter_install_mode; show_main_menu ;;
+                r|R|remove)    enter_remove_mode;  show_main_menu ;;
+                q|Q|quit|exit) echo "退出。"; exit 0 ;;
+                "") show_main_menu ;;
+                *) echo -e "${RED}无效选项，请输入 i / r / q${RESET}" ;;
+            esac
+        done
+        ;;
+    *)
+        echo -e "${RED}未知参数：$1${RESET}"
+        echo "用法：bash $0 [install|remove] [步骤号/all]"
+        exit 1
+        ;;
+esac

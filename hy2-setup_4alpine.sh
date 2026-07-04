@@ -137,7 +137,7 @@ step_install_3() {
 
     # ── 伪装域名（用于自签证书 CN 及 masquerade，仅占位，不需要真实可达）──
     if [ -z "$MASQ_DOMAIN" ]; then
-        MASQ_DOMAIN="www.bing.com"
+        MASQ_DOMAIN="www.zhihu.com"
     fi
     info "伪装/证书域名：${MASQ_DOMAIN}（可在安装步骤4前修改状态文件自定义）"
 

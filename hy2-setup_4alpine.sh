@@ -125,8 +125,8 @@ step_install_3() {
     if [ -n "$CMD_PORT" ]; then
         PORT="$CMD_PORT"
     elif [ -z "$PORT" ]; then
-        read -rp "请输入监听端口号（默认 28443）: " PORT
-        PORT="${PORT:-28443}"
+        read -rp "请输入监听端口号（默认 25443）: " PORT
+        PORT="${PORT:-25443}"
     else
         info "沿用上次保存的端口：${PORT}"
     fi
@@ -470,7 +470,7 @@ show_install_menu() {
     echo -e "  ${CYAN}q${RESET}  退出"
     echo
     echo -e "提示：执行步骤 3 时可通过环境变量指定端口，例如："
-    echo -e "  ${YELLOW}PORT=28443 bash $0 install 3${RESET}"
+    echo -e "  ${YELLOW}PORT=25443 bash $0 install 3${RESET}"
     echo
 }
 
